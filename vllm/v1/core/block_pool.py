@@ -26,6 +26,9 @@ from vllm.v1.core.kv_cache_utils import (
 )
 from vllm.v1.request import Request
 
+import time
+import threading
+
 logger = init_logger(__name__)
 
 
@@ -123,6 +126,22 @@ class BlockHashToBlockMap:
 
     def _unexpected_blocks_type(self, blocks: Any) -> None:
         raise AssertionError(f"Invalid KV cache block type {type(blocks)}")
+    
+    def get_eviction_candidates(self, percentile: int = 50) -> list[KVCacheBlock]:
+        candidates = []
+        for blocks in self._cache.values():
+            if isinstance(blocks, KVCacheBlock):
+                if blocks.ref_cnt == 0:
+                    candidates.append(blocks)
+            elif isinstance(blocks, dict):
+                for block in blocks.values():
+                    if block.ref_cnt == 0:
+                        candidates.append(block)
+            else:
+                self._unexpected_blocks_type(blocks)
+        candidates.sort(key=lambda block: block.score)
+        num_blocks = max(1, int(len(candidates) * percentile / 100))
+        return candidates[:num_blocks]
 
 
 class BlockPool:
@@ -203,6 +222,8 @@ class BlockPool:
             )
             if not block:
                 return None
+            block.frequency += 1
+            block.last_accessed_time = time.time()
             cached_blocks.append(block)
         return cached_blocks
 
@@ -262,6 +283,8 @@ class BlockPool:
                 block_hash, kv_cache_group_id
             )
             blk.block_hash = block_hash_with_group_id
+            # Record the end position of this block in the token sequence.
+            blk.chunk_end = (num_cached_blocks + i + 1) * block_size
             self.cached_block_hash_to_block.insert(block_hash_with_group_id, blk)
             if new_hashes is not None:
                 new_hashes.append(maybe_convert_block_hash(block_hash))
@@ -313,12 +336,16 @@ class BlockPool:
                 self._maybe_evict_cached_block(block)
                 assert block.ref_cnt == 0
                 block.ref_cnt += 1
+                block.last_accessed_time = time.time()
+                block.frequency = 1
                 if self.metrics_collector:
                     self.metrics_collector.on_block_allocated(block)
         else:
             for block in ret:
                 assert block.ref_cnt == 0
                 block.ref_cnt += 1
+                block.last_accessed_time = time.time()
+                block.frequency = 1
                 if self.metrics_collector:
                     self.metrics_collector.on_block_allocated(block)
         return ret
@@ -378,6 +405,8 @@ class BlockPool:
                 if block.ref_cnt == 0 and not block.is_null:
                     self.free_block_queue.remove(block)
                 block.ref_cnt += 1
+                block.frequency += 1
+                block.last_accessed_time = time.time()
                 if self.metrics_collector:
                     self.metrics_collector.on_block_accessed(block)
 

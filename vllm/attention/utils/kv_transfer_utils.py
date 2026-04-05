@@ -4,6 +4,10 @@ import inspect
 from collections.abc import Callable
 from functools import wraps
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 from vllm.distributed.kv_transfer import (
     get_kv_transfer_group,
     has_kv_transfer_group,

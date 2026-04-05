@@ -109,9 +109,9 @@ class Scheduler(SchedulerInterface):
         self.connector_prefix_cache_stats: PrefixCacheStats | None = None
         self.recompute_kv_load_failures = True
         if self.vllm_config.kv_transfer_config is not None:
-            assert not self.is_encoder_decoder, (
-                "Encoder-decoder models are not currently supported with KV connectors"
-            )
+            assert (
+                not self.is_encoder_decoder
+            ), "Encoder-decoder models are not currently supported with KV connectors"
             self.connector = KVConnectorFactory.create_connector(
                 config=self.vllm_config,
                 role=KVConnectorRole.SCHEDULER,
@@ -766,9 +766,9 @@ class Scheduler(SchedulerInterface):
         NOTE: The request should be popped from the running queue outside of this
         method.
         """
-        assert request.status == RequestStatus.RUNNING, (
-            "Only running requests can be preempted"
-        )
+        assert (
+            request.status == RequestStatus.RUNNING
+        ), "Only running requests can be preempted"
         self.kv_cache_manager.free(request)
         self.encoder_cache_manager.free(request)
         request.status = RequestStatus.PREEMPTED
@@ -1154,6 +1154,14 @@ class Scheduler(SchedulerInterface):
                     stopped_running_reqs.add(request)
                 else:
                     stopped_preempted_reqs.add(request)
+
+                candidates = (
+                    self.kv_cache_manager.block_pool.cached_block_hash_to_block.get_eviction_candidates()
+                )
+                if candidates:
+                    logger.info(f"Proactively evicts {len(candidates)} cached blocks, after request {req_id} is stopped.")
+                    # for block in candidates:
+                        # self.kv_cache_manager.block_pool._maybe_evict_cached_block(block)
 
             # Extract sample logprobs if needed.
             if (

@@ -27,6 +27,7 @@ from vllm.v1.kv_cache_interface import (
 )
 from vllm.v1.request import Request
 from vllm.v1.utils import tensor_data
+import time
 
 # BlockHash represents the hash of a single KV-cache block used for
 # prefix caching.  Treating it as a distinct type from `bytes` helps
@@ -104,6 +105,9 @@ def init_none_hash(hash_fn: Callable[[Any], bytes]):
         NONE_HASH = BlockHash(hash_fn(hash_seed))
 
 
+_KV_BLOCK_MAX_AGE = 3600.0 * 72
+
+
 @dataclass
 class KVCacheBlock:
     """KV-cache block metadata."""
@@ -112,6 +116,12 @@ class KVCacheBlock:
     block_id: int
     # Reference count.
     ref_cnt: int = 0
+    # Last time it got accessed
+    last_accessed_time: float = 0
+    # How many time it got accessed
+    frequency: int = 0
+    # Mark the absolute position of this block in the whole token sequence
+    chunk_end: int = 0
     # The hash key (block hash + group id) of the block, only available
     # when the block is full and cached.
     _block_hash: BlockHashWithGroupId | None = None
@@ -130,10 +140,16 @@ class KVCacheBlock:
 
     @block_hash.setter
     def block_hash(self, block_hash: BlockHashWithGroupId):
-        assert self.block_hash is None, (
-            "The block already has a hash. This should not happen."
-        )
+        assert (
+            self.block_hash is None
+        ), "The block already has a hash. This should not happen."
         self._block_hash = block_hash
+
+    @property
+    def score(self) -> float:
+        return self.frequency + (
+            self.last_accessed_time + _KV_BLOCK_MAX_AGE - time.time()
+        ) / (self.chunk_end + 1)
 
     def reset_hash(self):
         """Reset the block hash when the block is evicted."""
@@ -328,9 +344,9 @@ class FreeKVCacheBlockQueue:
             return
 
         last_block = self.fake_free_list_tail.prev_free_block
-        assert last_block is not None, (
-            "prev_free_block of fake_free_list_tail should always exist"
-        )
+        assert (
+            last_block is not None
+        ), "prev_free_block of fake_free_list_tail should always exist"
         # Add inter-connections between consecutive blocks
         for block in blocks:
             block.prev_free_block = last_block

@@ -11,6 +11,9 @@ if TYPE_CHECKING:
     from vllm.v1.core.kv_cache_utils import KVCacheBlock
 
 from vllm.v1.metrics.stats import KVCacheEvictionEvent
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class BlockMetricsState:
@@ -47,9 +50,9 @@ class KVCacheMetricsCollector:
     """Collects KV cache residency metrics with sampling."""
 
     def __init__(self, sample_rate: float = 0.01):
-        assert 0 < sample_rate <= 1.0, (
-            f"sample_rate must be in (0, 1.0], got {sample_rate}"
-        )
+        assert (
+            0 < sample_rate <= 1.0
+        ), f"sample_rate must be in (0, 1.0], got {sample_rate}"
         self.sample_rate = sample_rate
 
         self.block_metrics: dict[int, BlockMetricsState] = {}
@@ -62,16 +65,20 @@ class KVCacheMetricsCollector:
     def on_block_allocated(self, block: "KVCacheBlock") -> None:
         if self.should_sample_block():
             self.block_metrics[block.block_id] = BlockMetricsState()
+            # self.print_block_metrics("allocated", block)
 
     def on_block_accessed(self, block: "KVCacheBlock") -> None:
         metrics = self.block_metrics.get(block.block_id)
         if metrics:
             metrics.record_access()
+        self.print_block_metrics("accessed", block)
 
     def on_block_evicted(self, block: "KVCacheBlock") -> None:
         metrics = self.block_metrics.pop(block.block_id, None)
         if not metrics:
             return
+        
+        self.print_block_metrics("evicted", block)
 
         lifetime = metrics.get_lifetime_seconds()
         idle_time = metrics.get_idle_time_seconds()
@@ -94,3 +101,9 @@ class KVCacheMetricsCollector:
         events = self._eviction_events
         self._eviction_events = []
         return events
+
+    def print_block_metrics(self, ops: str, block: "KVCacheBlock") -> None:
+        # logger.info(
+        #     f"{ops} - block id: {block.block_id}, score: {block.score}, frequency: {block.frequency}, chunk_end: {block.chunk_end}, last_accessed_time: {block.last_accessed_time}"
+        # )
+        pass
