@@ -375,6 +375,14 @@ class Scheduler(SchedulerInterface):
             token_budget -= num_new_tokens
             req_index += 1
 
+            # KVTransfer: update block scores for running requests so that
+            # the connector can use real-time scores for selective offloading.
+            if self.connector is not None:
+                all_blocks = self.kv_cache_manager.get_blocks(
+                    request.request_id
+                )
+                self.connector.update_state_after_alloc(request, all_blocks, 0)
+
             # Speculative decode related.
             if request.spec_token_ids:
                 num_scheduled_spec_tokens = (
@@ -1154,14 +1162,6 @@ class Scheduler(SchedulerInterface):
                     stopped_running_reqs.add(request)
                 else:
                     stopped_preempted_reqs.add(request)
-
-                candidates = (
-                    self.kv_cache_manager.block_pool.cached_block_hash_to_block.get_eviction_candidates()
-                )
-                if candidates:
-                    logger.info(f"Proactively evicts {len(candidates)} cached blocks, after request {req_id} is stopped.")
-                    # for block in candidates:
-                        # self.kv_cache_manager.block_pool._maybe_evict_cached_block(block)
 
             # Extract sample logprobs if needed.
             if (

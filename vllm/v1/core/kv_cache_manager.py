@@ -61,6 +61,18 @@ class KVCacheBlocks:
         self,
         allow_none: Literal[True] = True,
     ) -> tuple[list[int], ...] | None: ...
+    
+    @overload
+    def get_block_scores(
+        self,
+        allow_none: Literal[False] = False,
+    ) -> tuple[list[float], ...]: ...
+
+    @overload
+    def get_block_scores(
+        self,
+        allow_none: Literal[True] = True,
+    ) -> tuple[list[float], ...] | None: ...
 
     def get_block_ids(
         self,
@@ -78,6 +90,23 @@ class KVCacheBlocks:
         if allow_none and all(len(group) == 0 for group in self.blocks):
             return None
         return tuple([blk.block_id for blk in group] for group in self.blocks)
+    
+    def get_block_scores(
+        self,
+        allow_none: bool = False,
+    ) -> tuple[list[float], ...] | None:
+        """
+        Converts the KVCacheBlocks instance to block_scores.
+
+        Returns:
+            tuple[list[float], ...]: A tuple of lists where:
+                - the outer tuple corresponds to KV cache groups
+                - each inner list contains the block_scores of the blocks in that
+                  group
+        """
+        if allow_none and all(len(group) == 0 for group in self.blocks):
+            return None
+        return tuple([blk.score for blk in group] for group in self.blocks)
 
     def get_unhashed_block_ids(self) -> list[int]:
         """Get block_ids of unhashed blocks from KVCacheBlocks instance."""
