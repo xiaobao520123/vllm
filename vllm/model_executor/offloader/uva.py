@@ -112,26 +112,60 @@ class UVAOffloader(BaseOffloader):
 
         if offloaded_parameters and not self.uva_offloading:
             original_forward = module.forward
+            module_label = type(module).__name__
 
             def forward(*args, **kwargs):
                 module.forward = original_forward
-                device_state = {
-                    # here we blindly call `to(device)`
-                    # if the parameter is already on the device,
-                    # it will be a no-op
-                    k: v.to(device, non_blocking=True)
-                    for k, v in module.state_dict().items()
-                }
-
-                # set `tie_weights=False` as tied weights in original model
-                # become untied when calling .to(device) individually
-                output = functional_call(
-                    module,
-                    device_state,
-                    args=args,
-                    kwargs=kwargs,
-                    tie_weights=False,
+                torch.cuda.nvtx.range_push(
+                    f"weight_offload:uva_h2d_{module_label}"
                 )
+                try:
+                    device_state = {
+                        # here we blindly call `to(device)`
+                        # if the parameter is already on the device,
+                        # it will be a no-op
+                        k: v.to(device, non_blocking=True)
+                        for k, v in module.state_dict().items()
+                    }
+                finally:
+                    torch.cuda.nvtx.range_pop()
+
+                torch.cuda.nvtx.range_push(
+                    f"weight_offload:uva_compute_{module_label}"
+                )
+                try:
+                    # set `tie_weights=False` as tied weights in original model
+                    # become untied when calling .to(device) individually
+                    output = functional_call(
+                        module,
+                        device_state,
+                        args=args,
+                        kwargs=kwargs,
+                        tie_weights=False,
+                    )
+                finally:
+                    torch.cuda.nvtx.range_pop()
+                module.forward = forward
+                return output
+
+            module.forward = forward
+        elif offloaded_parameters and self.uva_offloading:
+            # In UVA mode, parameters live on the host and the GPU reads them
+            # over PCIe directly inside compute kernels. There is no explicit
+            # H2D copy to mark, but we still wrap the layer's forward so that
+            # the UVA-managed compute is identifiable in the timeline.
+            original_forward = module.forward
+            module_label = type(module).__name__
+
+            def forward(*args, **kwargs):
+                module.forward = original_forward
+                torch.cuda.nvtx.range_push(
+                    f"weight_offload:uva_pcie_compute_{module_label}"
+                )
+                try:
+                    output = original_forward(*args, **kwargs)
+                finally:
+                    torch.cuda.nvtx.range_pop()
                 module.forward = forward
                 return output
 

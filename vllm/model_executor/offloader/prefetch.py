@@ -159,6 +159,8 @@ class PrefetchOffloader(BaseOffloader):
         self.module_offloaders: list[_ModuleOffloader] = []
         self.buffer_pool: StaticBufferPool | None = None
         self.total_offloaded_bytes = 0
+        # Mapping from offloaded index to original model layer index
+        self._offload_to_model_idx: list[int] = []
 
     def wrap_modules(
         self,
@@ -191,6 +193,7 @@ class PrefetchOffloader(BaseOffloader):
                     continue  # skip layers with no matching params
 
                 offload_modules.append(module)
+                self._offload_to_model_idx.append(module_index)
                 self.module_offloaders.append(
                     _ModuleOffloader(
                         mode=self.mode,
@@ -209,30 +212,40 @@ class PrefetchOffloader(BaseOffloader):
     def _hook_module_forward(self, index: int, module: nn.Module):
         """Hook module's forward with torch.compile-compatible sync."""
         original_forward = module.forward
+        model_layer_idx = self._offload_to_model_idx[index]
 
         def forward(*args, **kwargs):
             # Temporarily restore original forward to avoid recursion
             module.forward = original_forward
 
-            # Wait for this layer's prefetch to complete
-            # mutates_args on input_tensor creates data dependency for torch.compile
-            input_tensor = args[0] if args else kwargs.get("hidden_states")
-            torch.ops.vllm.wait_prefetch(input_tensor, index)
+            torch.cuda.nvtx.range_push(
+                f"weight_offload:prefetch_layer_{model_layer_idx}"
+            )
+            try:
+                # Wait for this layer's prefetch to complete
+                # mutates_args on input_tensor creates data dependency for torch.compile
+                input_tensor = args[0] if args else kwargs.get("hidden_states")
+                torch.ops.vllm.wait_prefetch(input_tensor, index)
 
-            # No parameter swapping needed - parameters already point to
-            # GPU static buffers (set in assign_static_buffer)
-            output = original_forward(*args, **kwargs)
+                # No parameter swapping needed - parameters already point to
+                # GPU static buffers (set in assign_static_buffer)
+                output = original_forward(*args, **kwargs)
 
-            # Start prefetch for next layer (circular)
-            # mutates_args on output_tensor creates ordering dependency
-            next_index = (index + self.prefetch_step) % len(self.module_offloaders)
-            # Handle tuple output (e.g., (hidden_states, residual))
-            if isinstance(output, tuple):
-                torch.ops.vllm.start_prefetch(output[0], next_index)
-            else:
-                torch.ops.vllm.start_prefetch(output, next_index)
+                # Start prefetch for next layer (circular)
+                # mutates_args on output_tensor creates ordering dependency
+                next_index = (
+                    (index + self.prefetch_step) % len(self.module_offloaders)
+                )
+                next_model_idx = self._offload_to_model_idx[next_index]
+                # Handle tuple output (e.g., (hidden_states, residual))
+                if isinstance(output, tuple):
+                    torch.ops.vllm.start_prefetch(output[0], next_index)
+                else:
+                    torch.ops.vllm.start_prefetch(output, next_index)
 
-            # No explicit offload needed - static buffers are reused implicitly
+                # No explicit offload needed - static buffers are reused implicitly
+            finally:
+                torch.cuda.nvtx.range_pop()
 
             # Restore hooked forward
             module.forward = forward

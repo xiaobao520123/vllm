@@ -30,7 +30,12 @@ def _wait_prefetch_impl(
             as mutated to create data dependency for torch.compile.
         layer_idx: Index of the layer to wait for.
     """
-    get_offloader()._wait_for_layer(layer_idx)
+    torch.cuda.nvtx.range_push(
+        f"weight_offload:wait_prefetch_layer_{get_offloader()._offload_to_model_idx[layer_idx]}")
+    try:
+        get_offloader()._wait_for_layer(layer_idx)
+    finally:
+        torch.cuda.nvtx.range_pop()
 
 
 def _wait_prefetch_fake(
@@ -58,7 +63,12 @@ def _start_prefetch_impl(
             computation that produces output_tensor.
         layer_idx: Index of the layer to prefetch.
     """
-    get_offloader()._start_prefetch(layer_idx)
+    torch.cuda.nvtx.range_push(
+        f"weight_offload:start_prefetch_layer_{get_offloader()._offload_to_model_idx[layer_idx]}")
+    try:
+        get_offloader()._start_prefetch(layer_idx)
+    finally:
+        torch.cuda.nvtx.range_pop()
 
 
 def _start_prefetch_fake(
